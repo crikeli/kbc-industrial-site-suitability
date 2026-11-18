@@ -29,9 +29,15 @@ SCORE_BINS = [
 ]
 
 
+VACANT_COLOR = "#f2a900"  # amber ring -- a secondary channel, not a hue swap,
+# so vacancy reads as its own signal without competing with the blue score fill.
+
+
 @st.cache_data
 def load_data():
-    return gpd.read_file(DATA_PATH)
+    gdf = gpd.read_file(DATA_PATH)
+    gdf["is_vacant"] = gdf["use_description"].str.contains("Vacant", case=False, na=False)
+    return gdf
 
 
 def score_color(score):
@@ -70,6 +76,12 @@ def render_legend(m):
             Composite score
         </div>
         {swatches}
+        <div style="border-top:1px solid #ddd;margin:8px 0 6px;"></div>
+        <div style="display:flex;align-items:center;">
+            <span style="width:14px;height:14px;background:transparent;border:3px solid {VACANT_COLOR};
+            display:inline-block;margin-right:6px;border-radius:50%;"></span>
+            <span style="font-size:12px;color:#222;">Vacant lot</span>
+        </div>
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
@@ -92,32 +104,56 @@ def render_dashboard_tab(gdf):
         st.divider()
         min_score = st.slider("Minimum composite score to show", 0.0, 1.0, 0.0, 0.05)
 
+        st.divider()
+        st.header("Availability")
+        vacant_only = st.checkbox("Vacant lots only")
+        st.caption(
+            "Vacant lots are outlined in amber on the map either way — this just "
+            "filters the table and map down to them."
+        )
+
     scored = compute_scores(gdf, (w_lotsize, w_highway, w_rail, w_labor))
     visible = scored[scored["composite_score"] >= min_score]
+    if vacant_only:
+        visible = visible[visible["is_vacant"]]
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    vacant_count = int(scored["is_vacant"].sum())
+    vacant_acres = scored.loc[scored["is_vacant"], "SQFTLOT"].sum() / 43560
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Candidate parcels", len(scored))
     c2.metric("Shown at current filter", len(visible))
     c3.metric("Top score", f"{scored['composite_score'].max():.2f}" if len(scored) else "—")
     c4.metric("Median score (shown)", f"{visible['composite_score'].median():.2f}" if len(visible) else "—")
     c5.metric("Median lot size (sqft)", f"{int(scored['SQFTLOT'].median()):,}" if len(scored) else "—")
+    c6.metric(
+        "Vacant land available",
+        f"{vacant_acres:,.0f} ac",
+        help=f"{vacant_count} of {len(scored)} candidates ({vacant_count / len(scored) * 100:.0f}%) are vacant on file.",
+    )
 
     st.subheader("Site map")
     center = [scored.geometry.centroid.y.mean(), scored.geometry.centroid.x.mean()]
     m = folium.Map(location=center, zoom_start=12, tiles="OpenStreetMap")
     for _, row in visible.iterrows():
         c = row.geometry.centroid
+        vacant_line = (
+            "<b style='color:#b57b00'>⬤ VACANT — no existing tenant to relocate</b><br>"
+            if row["is_vacant"]
+            else ""
+        )
         folium.CircleMarker(
             location=[c.y, c.x],
-            radius=5 + 4 * row["composite_score"],
-            color="#1a1a1a",
-            weight=1,
+            radius=(6 if row["is_vacant"] else 5) + 4 * row["composite_score"],
+            color=VACANT_COLOR if row["is_vacant"] else "#1a1a1a",
+            weight=3 if row["is_vacant"] else 1,
             fill=True,
             fill_color=score_color(row["composite_score"]),
             fill_opacity=0.85,
             popup=folium.Popup(
                 f"<b>{row['site_label']}</b><br>"
                 f"{row['address_full']}<br>"
+                f"{vacant_line}"
                 f"<b>Use on file:</b> {row['use_description']}<br>"
                 f"<b>Composite score:</b> {row['composite_score']:.2f}<br>"
                 f"<b>Lot size:</b> {int(row['SQFTLOT']):,} sqft<br>"
@@ -134,16 +170,17 @@ def render_dashboard_tab(gdf):
     st.subheader("Candidate sites")
     st.caption(f"Showing all {len(visible)} sites at the current filter, ranked by composite score.")
 
-    # Only the six fields an analyst scans to rank sites at a glance. Highway/rail
+    # Only the seven fields an analyst scans to rank sites at a glance. Highway/rail
     # distance stay in the map popup (per-site detail) rather than the grid, so
     # every column here fits on screen without horizontal scrolling.
     table = visible[
-        ["site_label", "address_full", "use_description", "composite_score", "SQFTLOT", "CURRENTZONING"]
+        ["site_label", "address_full", "use_description", "is_vacant", "composite_score", "SQFTLOT", "CURRENTZONING"]
     ].rename(
         columns={
             "site_label": "Site",
             "address_full": "Address",
             "use_description": "Use on file",
+            "is_vacant": "Vacant",
             "composite_score": "Score",
             "SQFTLOT": "Lot sqft",
             "CURRENTZONING": "Zoning",
@@ -159,6 +196,7 @@ def render_dashboard_tab(gdf):
             "Site": st.column_config.TextColumn(width="medium"),
             "Address": st.column_config.TextColumn(width="medium"),
             "Use on file": st.column_config.TextColumn(width="medium"),
+            "Vacant": st.column_config.CheckboxColumn(width="small"),
             # Plain number, not a progress bar: Streamlit's built-in ProgressColumn
             # uses the app's accent color, which would introduce a second,
             # uncontrolled color channel that clashes with the map's blue scale.
@@ -234,6 +272,38 @@ call.
 No ArcGIS license, Salesforce, or CoStar access was available for this
 project, so public data stands in for the posting's named sources — the
 data-cleaning and multi-source-join problem is the same either way.
+"""
+    )
+
+    st.subheader("Value prop: surfacing vacancy, not just zoning")
+    st.markdown(
+        """
+Zoning tells you what's *allowed* on a parcel. It says nothing about whether
+the parcel is actually *available* — the CarMax dealership and the condo
+complex flagged below are both zoned industrial right now. The dashboard
+answers the availability question directly, using King County's own
+Assessor-reported use status (not an inference): **347 of 1,809 candidates
+(19.2%) are currently vacant, totaling roughly 1,576 acres** of ready-to-move
+industrial-zoned land in the corridor.
+
+That distinction is the actual deal-speed lever in industrial site selection:
+
+- **A vacant, high-scoring parcel is a near-term development target** — no
+  tenant to relocate, no building to tear down, a client could move on it
+  this quarter.
+- **A non-vacant, high-scoring parcel is a land-banking note, not a live
+  deal** — same suitability score, a completely different client
+  conversation and timeline.
+- Rolling this up to a single number — "~1,576 vacant acres currently
+  available in the Kent Valley corridor" — is exactly the kind of headline
+  market-intelligence figure a Location Intelligence analyst would hand
+  straight to a client pitch or market report, not just an internal QA
+  flag.
+
+In the dashboard, vacant lots get their own visual channel (an amber ring,
+not a color swap) so they stay visible against the composite-score scale
+rather than competing with it, plus a sidebar toggle to filter down to vacant
+sites only.
 """
     )
 

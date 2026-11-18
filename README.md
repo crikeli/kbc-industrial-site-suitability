@@ -8,7 +8,11 @@ data pull to client-ready product," supporting "suitability, site selection,
 center of gravity, and gap analysis."
 
 **[Live dashboard →](https://kbc-industrial-site-suitability-v7yfwds8zpmcugmlgesvnx.streamlit.app/)**
-— drag the criteria-weight sliders and watch the map and rankings update live.
+— drag the criteria-weight sliders and watch the map and rankings update live,
+or toggle "Vacant lots only" to see which high-scoring sites are actually
+available land right now (~1,576 vacant acres in the corridor) vs. already
+built out. The app has a dedicated **Methodology tab** with the full write-up,
+data sources, and honesty notes.
 
 ## Why this project, and why this area
 
