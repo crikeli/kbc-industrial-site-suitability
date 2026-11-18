@@ -4,13 +4,15 @@ King County corridor -- the open-source analog of the ArcGIS Online Dashboards
 
 Run with: streamlit run app.py
 """
+import os
 import geopandas as gpd
 import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
-DATA_PATH = "../data/processed/parcels_scored.geojson"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(APP_DIR, "..", "data", "processed", "parcels_scored.geojson")
 
 st.set_page_config(page_title="Industrial Site Suitability — Kent Valley, WA", layout="wide")
 
