@@ -16,34 +16,66 @@ DATA_PATH = os.path.join(APP_DIR, "..", "data", "processed", "parcels_scored.geo
 
 st.set_page_config(page_title="Industrial Site Suitability — Kent Valley, WA", layout="wide")
 
+# Single-hue sequential ramp (ColorBrewer "Blues") for the composite score.
+# Deliberately NOT red/yellow/green: red-green is the most common CVD
+# confusion pair, and a magnitude score should be one hue light->dark, not
+# a multi-hue "traffic light."
+SCORE_BINS = [
+    (0.0, 0.2, "#eff3ff", "Poor (0.0–0.2)"),
+    (0.2, 0.4, "#bdd7e7", "Below average (0.2–0.4)"),
+    (0.4, 0.6, "#6baed6", "Fair (0.4–0.6)"),
+    (0.6, 0.8, "#3182bd", "Good (0.6–0.8)"),
+    (0.8, 1.01, "#08519c", "Excellent (0.8–1.0)"),
+]
+
 
 @st.cache_data
 def load_data():
-    gdf = gpd.read_file(DATA_PATH)
-    return gdf
+    return gpd.read_file(DATA_PATH)
 
 
 def score_color(score):
-    if score >= 0.75:
-        return "#1a9850"
-    if score >= 0.5:
-        return "#91cf60"
-    if score >= 0.25:
-        return "#fee08b"
-    return "#d73027"
+    for lo, hi, color, _ in SCORE_BINS:
+        if lo <= score < hi:
+            return color
+    return SCORE_BINS[-1][2]
 
 
-def main():
-    gdf = load_data()
+def compute_scores(gdf, weights):
+    w_lotsize, w_highway, w_rail, w_labor = weights
+    total_w = w_lotsize + w_highway + w_rail + w_labor
+    gdf = gdf.copy()
+    gdf["composite_score"] = (
+        w_lotsize * gdf["score_lotsize"]
+        + w_highway * gdf["score_highway"]
+        + w_rail * gdf["score_rail"]
+        + w_labor * gdf["score_labor"]
+    ) / total_w
+    return gdf.sort_values("composite_score", ascending=False)
 
-    st.title("Industrial Site Suitability — Kent Valley / South King County")
-    st.caption(
-        "Real City/County GIS data (King County parcels & assessor records, OpenStreetMap "
-        "highways & rail, Census ACS labor force) scored for warehouse/logistics site "
-        "selection. Built as a portfolio project for KBC Advisors' GIS Analyst role — "
-        "see README for methodology and data-source notes."
+
+def render_legend(m):
+    swatches = "".join(
+        f'<div style="display:flex;align-items:center;margin-bottom:4px;">'
+        f'<span style="width:14px;height:14px;background:{color};border:1px solid #333;'
+        f'display:inline-block;margin-right:6px;border-radius:3px;"></span>'
+        f'<span style="font-size:12px;color:#222;">{label}</span></div>'
+        for _, _, color, label in SCORE_BINS
     )
+    legend_html = f"""
+    <div style="position: fixed; bottom: 30px; left: 30px; z-index: 9999;
+                background: white; padding: 10px 12px; border-radius: 6px;
+                border: 1px solid #999; box-shadow: 0 1px 4px rgba(0,0,0,0.3);">
+        <div style="font-size:12px;font-weight:700;color:#222;margin-bottom:6px;">
+            Composite score
+        </div>
+        {swatches}
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
 
+
+def render_dashboard_tab(gdf):
     with st.sidebar:
         st.header("Criteria weights")
         st.caption("Adjust how much each factor matters — the map and rankings update live.")
@@ -55,89 +87,202 @@ def main():
         total_w = w_lotsize + w_highway + w_rail + w_labor
         if total_w == 0:
             st.warning("Set at least one weight above zero.")
-            return
+            st.stop()
 
         st.divider()
         min_score = st.slider("Minimum composite score to show", 0.0, 1.0, 0.0, 0.05)
 
-    gdf = gdf.copy()
-    gdf["composite_score"] = (
-        w_lotsize * gdf["score_lotsize"]
-        + w_highway * gdf["score_highway"]
-        + w_rail * gdf["score_rail"]
-        + w_labor * gdf["score_labor"]
-    ) / total_w
-    gdf = gdf.sort_values("composite_score", ascending=False)
+    scored = compute_scores(gdf, (w_lotsize, w_highway, w_rail, w_labor))
+    visible = scored[scored["composite_score"] >= min_score]
 
-    visible = gdf[gdf["composite_score"] >= min_score]
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Candidate parcels", len(scored))
+    c2.metric("Shown at current filter", len(visible))
+    c3.metric("Top score", f"{scored['composite_score'].max():.2f}" if len(scored) else "—")
+    c4.metric("Median score (shown)", f"{visible['composite_score'].median():.2f}" if len(visible) else "—")
+    c5.metric("Median lot size (sqft)", f"{int(scored['SQFTLOT'].median()):,}" if len(scored) else "—")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Candidate parcels", len(gdf))
-    col2.metric("Shown at current filter", len(visible))
-    col3.metric("Top score", f"{gdf['composite_score'].max():.2f}" if len(gdf) else "—")
-    col4.metric("Median lot size (sqft)", f"{int(gdf['SQFTLOT'].median()):,}" if len(gdf) else "—")
+    st.subheader("Site map")
+    center = [scored.geometry.centroid.y.mean(), scored.geometry.centroid.x.mean()]
+    m = folium.Map(location=center, zoom_start=12, tiles="OpenStreetMap")
+    for _, row in visible.iterrows():
+        c = row.geometry.centroid
+        folium.CircleMarker(
+            location=[c.y, c.x],
+            radius=5 + 4 * row["composite_score"],
+            color="#1a1a1a",
+            weight=1,
+            fill=True,
+            fill_color=score_color(row["composite_score"]),
+            fill_opacity=0.85,
+            popup=folium.Popup(
+                f"<b>{row['site_label']}</b><br>"
+                f"{row['address_full']}<br>"
+                f"<b>Use on file:</b> {row['use_description']}<br>"
+                f"<b>Composite score:</b> {row['composite_score']:.2f}<br>"
+                f"<b>Lot size:</b> {int(row['SQFTLOT']):,} sqft<br>"
+                f"<b>Zoning:</b> {row['CURRENTZONING']}<br>"
+                f"<b>Highway dist:</b> {row['dist_highway_ft']:.0f} ft<br>"
+                f"<b>Rail dist:</b> {row['dist_rail_ft']:.0f} ft<br>"
+                f"<span style='color:#888'>PIN: {row['PIN']}</span>",
+                max_width=280,
+            ),
+        ).add_to(m)
+    render_legend(m)
+    st_folium(m, width=None, height=680, returned_objects=[])
 
-    map_col, table_col = st.columns([2, 1])
+    st.subheader("Candidate sites")
+    st.caption(f"Showing all {len(visible)} sites at the current filter, ranked by composite score.")
 
-    with map_col:
-        center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
-        m = folium.Map(location=center, zoom_start=12, tiles="OpenStreetMap")
-        for _, row in visible.iterrows():
-            c = row.geometry.centroid
-            folium.CircleMarker(
-                location=[c.y, c.x],
-                radius=5 + 4 * row["composite_score"],
-                color="#333333",
-                weight=1,
-                fill=True,
-                fill_color=score_color(row["composite_score"]),
-                fill_opacity=0.85,
-                popup=folium.Popup(
-                    f"<b>{row['site_label']}</b><br>"
-                    f"{row['address_full']}<br>"
-                    f"<b>Use on file:</b> {row['use_description']}<br>"
-                    f"<b>Composite score:</b> {row['composite_score']:.2f}<br>"
-                    f"<b>Lot size:</b> {int(row['SQFTLOT']):,} sqft<br>"
-                    f"<b>Zoning:</b> {row['CURRENTZONING']}<br>"
-                    f"<b>Highway dist:</b> {row['dist_highway_ft']:.0f} ft<br>"
-                    f"<b>Rail dist:</b> {row['dist_rail_ft']:.0f} ft<br>"
-                    f"<span style='color:#888'>PIN: {row['PIN']}</span>",
-                    max_width=280,
-                ),
-            ).add_to(m)
-        st_folium(m, width=None, height=560, returned_objects=[])
-
-    with table_col:
-        st.subheader("Top candidate sites")
-        top = visible.head(15)[
-            ["site_label", "address_full", "use_description", "composite_score", "SQFTLOT", "CURRENTZONING"]
-        ].rename(
-            columns={
-                "site_label": "Site",
-                "address_full": "Address",
-                "use_description": "Use on file",
-                "composite_score": "Score",
-                "SQFTLOT": "Lot sqft",
-                "CURRENTZONING": "Zoning",
-            }
-        )
-        top["Score"] = top["Score"].round(2)
-        st.dataframe(top, hide_index=True, use_container_width=True)
-        st.caption(
-            "Site name/address/use are King County Assessor records on file for each "
-            "parcel — not independently verified. ~4% of candidates have no property "
-            "name on file and ~27% have no street address on file; those fall back to "
-            "a generic label."
-        )
-
-    st.divider()
-    st.caption(
-        "Methodology note: zoning classification uses a best-effort, non-authoritative "
-        "mapping of King County's ~900 distinct municipal zoning codes to 'industrial' — "
-        "see scripts/04_compute_suitability.py and README.md. Highway/rail distances are "
-        "straight-line proxies, not drive-time; a production engagement would use network "
-        "routing."
+    # Only the six fields an analyst scans to rank sites at a glance. Highway/rail
+    # distance stay in the map popup (per-site detail) rather than the grid, so
+    # every column here fits on screen without horizontal scrolling.
+    table = visible[
+        ["site_label", "address_full", "use_description", "composite_score", "SQFTLOT", "CURRENTZONING"]
+    ].rename(
+        columns={
+            "site_label": "Site",
+            "address_full": "Address",
+            "use_description": "Use on file",
+            "composite_score": "Score",
+            "SQFTLOT": "Lot sqft",
+            "CURRENTZONING": "Zoning",
+        }
     )
+
+    st.dataframe(
+        table,
+        hide_index=True,
+        use_container_width=True,
+        height=560,
+        column_config={
+            "Site": st.column_config.TextColumn(width="medium"),
+            "Address": st.column_config.TextColumn(width="medium"),
+            "Use on file": st.column_config.TextColumn(width="medium"),
+            # Plain number, not a progress bar: Streamlit's built-in ProgressColumn
+            # uses the app's accent color, which would introduce a second,
+            # uncontrolled color channel that clashes with the map's blue scale.
+            "Score": st.column_config.NumberColumn(format="%.2f"),
+            "Lot sqft": st.column_config.NumberColumn(format="%d"),
+            "Zoning": st.column_config.TextColumn(width="small"),
+        },
+    )
+    st.caption(
+        "Site name/address/use are King County Assessor records on file for each "
+        "parcel — not independently verified. ~4% of candidates have no property "
+        "name on file and ~27% have no street address on file; those fall back to "
+        "a generic label. Highway/rail distance are in each site's map popup. See "
+        "the Methodology tab for data sources and caveats."
+    )
+
+
+def render_methodology_tab():
+    st.header("Methodology & why this exists")
+
+    st.markdown(
+        """
+This dashboard is a portfolio project built for KBC Advisors' **GIS Analyst
+(Location Intelligence)** posting. KBC is an industrial real estate advisory
+firm, and the role's core duty is running location analyses — suitability,
+site selection, gap analysis — from data pull to client-ready product, in
+ArcGIS Online, Dashboards, and Python automation.
+
+This app is the same analytical job, built with the open-source stack I
+actually have (Python, GeoPandas, Streamlit) instead of ArcGIS. The
+site-selection *logic* — multi-criteria scoring, live re-weighting, a
+client-facing map and ranked list — is the same regardless of which GIS
+platform runs it.
+"""
+    )
+
+    st.subheader("Why the Kent Valley corridor")
+    st.markdown(
+        """
+Tukwila, Kent, Auburn, Renton, and SeaTac make up the real largest
+industrial/warehouse submarket in the Pacific Northwest — not an arbitrary
+study area, but the actual market this kind of analysis would be run on.
+"""
+    )
+
+    st.subheader("The four scoring criteria")
+    st.markdown(
+        """
+Every candidate parcel is industrial-zoned and above a minimum lot size, then
+scored 0–1 on each criterion below. **The dashboard does not bake in a single
+composite number** — it computes the weighted composite live from the
+sliders you set, the same way an analyst would re-weight a model on a client
+call.
+
+| Criterion | What it measures | Source |
+|---|---|---|
+| Lot size | Larger lots score higher, capped at ~11.5 acres | King County Assessor (`SQFTLOT`) |
+| Highway access | Inverse distance to the nearest motorway/trunk road | OpenStreetMap, via `osmnx` |
+| Rail access | Inverse distance to the nearest freight rail line | OpenStreetMap, via `osmnx` |
+| Labor availability | Local census-tract labor force, employed | US Census ACS 5-year (2022) |
+"""
+    )
+
+    st.subheader("Data sources")
+    st.markdown(
+        """
+| Source | Provides | Access |
+|---|---|---|
+| King County Assessor / GIS | Parcel geometry, zoning, lot size, address, property name, use description | Public ArcGIS REST FeatureServers |
+| OpenStreetMap | Highway network, freight rail lines | Overpass API via `osmnx` |
+| US Census ACS 5-year (2022) | Labor force by tract | Census API (free key) |
+
+No ArcGIS license, Salesforce, or CoStar access was available for this
+project, so public data stands in for the posting's named sources — the
+data-cleaning and multi-source-join problem is the same either way.
+"""
+    )
+
+    st.subheader("Honesty notes — read before trusting a number here")
+    st.warning(
+        "**Zoning classification is a best-effort mapping, not an authoritative one.** "
+        "King County's parcel data spans roughly 40 municipal zoning systems and ~900 "
+        "distinct codes, with no public decode table for which ones mean 'industrial' "
+        "across jurisdictions. This project uses an explicit, documented list of "
+        "high-confidence codes (I1/I2/I3, M1/M2/M3, IL/IM/IH, etc.) built from standard "
+        "Washington municipal zoning conventions. A real engagement would verify every "
+        "code against each city's own ordinance before using it as a filter."
+    )
+    st.warning(
+        "**Highway/rail distances are straight-line, not drive-time.** A production "
+        "version would route against the actual road network (e.g. OSRM) for true "
+        "travel distance."
+    )
+    st.warning(
+        "**Zoning does not mean available.** Adding real site names surfaced that some "
+        "high-scoring 'industrial-zoned' candidates are long-established car dealerships "
+        "or even a condominium complex — legally zoned right, but not realistically "
+        "redevelopable without a willing seller and a teardown. A real engagement would "
+        "cross-reference the use description against active listings before calling a "
+        "parcel a true candidate."
+    )
+
+    st.subheader("Code & reproducibility")
+    st.markdown(
+        "Full pipeline, scripts, and write-up: "
+        "[github.com/crikeli/kbc-industrial-site-suitability]"
+        "(https://github.com/crikeli/kbc-industrial-site-suitability)"
+    )
+
+
+def main():
+    gdf = load_data()
+
+    st.title("Industrial Site Suitability — Kent Valley / South King County")
+    st.caption(
+        "Real City/County GIS data scored for warehouse/logistics site selection. "
+        "Built as a portfolio project for KBC Advisors' GIS Analyst role."
+    )
+
+    tab_dashboard, tab_methodology = st.tabs(["Dashboard", "Methodology"])
+    with tab_dashboard:
+        render_dashboard_tab(gdf)
+    with tab_methodology:
+        render_methodology_tab()
 
 
 if __name__ == "__main__":
