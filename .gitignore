@@ -1,0 +1,7 @@
+.env
+data/raw/
+scripts/cache/
+*.gpkg-wal
+*.gpkg-shm
+.DS_Store
+__pycache__/
