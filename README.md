@@ -7,7 +7,8 @@ role's own duty list describes: "run location analyses independently, from
 data pull to client-ready product," supporting "suitability, site selection,
 center of gravity, and gap analysis."
 
-**[Live dashboard →](#deployment)** (see Deployment section for the link once published)
+**[Live dashboard →](https://kbc-industrial-site-suitability-v7yfwds8zpmcugmlgesvnx.streamlit.app/)**
+— drag the criteria-weight sliders and watch the map and rankings update live.
 
 ## Why this project, and why this area
 
@@ -98,4 +99,5 @@ streamlit run app.py
 
 ## Deployment
 
-Deployed to Streamlit Community Cloud: _link added once published_.
+Deployed to Streamlit Community Cloud:
+https://kbc-industrial-site-suitability-v7yfwds8zpmcugmlgesvnx.streamlit.app/
