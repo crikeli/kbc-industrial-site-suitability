@@ -93,13 +93,16 @@ def main():
                 fill_color=score_color(row["composite_score"]),
                 fill_opacity=0.85,
                 popup=folium.Popup(
-                    f"<b>PIN:</b> {row['PIN']}<br>"
+                    f"<b>{row['site_label']}</b><br>"
+                    f"{row['address_full']}<br>"
+                    f"<b>Use on file:</b> {row['use_description']}<br>"
                     f"<b>Composite score:</b> {row['composite_score']:.2f}<br>"
                     f"<b>Lot size:</b> {int(row['SQFTLOT']):,} sqft<br>"
                     f"<b>Zoning:</b> {row['CURRENTZONING']}<br>"
                     f"<b>Highway dist:</b> {row['dist_highway_ft']:.0f} ft<br>"
-                    f"<b>Rail dist:</b> {row['dist_rail_ft']:.0f} ft",
-                    max_width=250,
+                    f"<b>Rail dist:</b> {row['dist_rail_ft']:.0f} ft<br>"
+                    f"<span style='color:#888'>PIN: {row['PIN']}</span>",
+                    max_width=280,
                 ),
             ).add_to(m)
         st_folium(m, width=None, height=560, returned_objects=[])
@@ -107,20 +110,25 @@ def main():
     with table_col:
         st.subheader("Top candidate sites")
         top = visible.head(15)[
-            ["PIN", "composite_score", "SQFTLOT", "CURRENTZONING", "dist_highway_ft", "dist_rail_ft"]
+            ["site_label", "address_full", "use_description", "composite_score", "SQFTLOT", "CURRENTZONING"]
         ].rename(
             columns={
+                "site_label": "Site",
+                "address_full": "Address",
+                "use_description": "Use on file",
                 "composite_score": "Score",
                 "SQFTLOT": "Lot sqft",
                 "CURRENTZONING": "Zoning",
-                "dist_highway_ft": "Hwy ft",
-                "dist_rail_ft": "Rail ft",
             }
         )
         top["Score"] = top["Score"].round(2)
-        top["Hwy ft"] = top["Hwy ft"].round(0)
-        top["Rail ft"] = top["Rail ft"].round(0)
         st.dataframe(top, hide_index=True, use_container_width=True)
+        st.caption(
+            "Site name/address/use are King County Assessor records on file for each "
+            "parcel — not independently verified. ~4% of candidates have no property "
+            "name on file and ~27% have no street address on file; those fall back to "
+            "a generic label."
+        )
 
     st.divider()
     st.caption(

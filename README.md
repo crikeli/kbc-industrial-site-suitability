@@ -57,7 +57,12 @@ the data-cleaning and multi-source-join problem is the same either way.
    size, highway-access distance, rail-access distance, and local labor
    force. **Outputs the four raw component scores, not a single baked-in
    number** — composite scoring happens live in the dashboard.
-5. **`app/app.py`** — a Streamlit dashboard with a slider per criterion.
+5. **`05_fetch_site_identifiers.py`** — enriches every candidate with a real
+   street address, property/business name, and King County's own decoded
+   present-use description (pulled from the County's public parcel-address
+   layer), so the dashboard shows "Williams Concrete, 25232 74th Ave S, Kent"
+   instead of a bare PIN.
+6. **`app/app.py`** — a Streamlit dashboard with a slider per criterion.
    Dragging a weight re-ranks every parcel and redraws the map instantly —
    the same kind of live re-weighting an analyst would do on a client call.
 
@@ -76,6 +81,14 @@ the data-cleaning and multi-source-join problem is the same either way.
   version would route against the actual road network (e.g. OSRM) for true
   travel distance; the straight-line proxy is stated as such everywhere it's
   used.
+
+Adding real identifiers also surfaced a genuine finding worth stating plainly:
+zoning alone doesn't mean a parcel is *available* industrial land. Some
+high-scoring candidates are long-established car dealerships (e.g. a CarMax,
+a Honda dealer) or even a condominium complex — legally zoned industrial, but
+not realistically redevelopable without a willing seller and a teardown. A
+real engagement would cross-reference `use_description` against something
+like active listings before calling a parcel a true "candidate."
 
 ## Running it locally
 
