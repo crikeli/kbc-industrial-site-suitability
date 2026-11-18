@@ -32,6 +32,44 @@ SCORE_BINS = [
 VACANT_COLOR = "#f2a900"  # amber ring -- a secondary channel, not a hue swap,
 # so vacancy reads as its own signal without competing with the blue score fill.
 
+# Technical code -> (short label, plain-language description). King County's parcel
+# data spans ~40 municipal zoning systems with no public decode table (see the
+# Methodology tab), so these are generic, defensible descriptions of standard
+# Washington industrial zoning *categories* -- not a verbatim quote from any one
+# city's ordinance, and the same letter can mean different things in different
+# cities (Kent's M1 and Auburn's M1 are not the same rule). Covers every code
+# present in this project's candidate set; anything else falls back below.
+ZONING_LABELS = {
+    "I": ("Industrial", "General industrial use"),
+    "I1": ("Industrial — light", "Lighter-intensity industrial or warehousing"),
+    "I2": ("Industrial — general", "General industrial or warehousing"),
+    "I3": ("Industrial — heavy", "Higher-intensity or heavy industrial"),
+    "I-C": ("Industrial-Commercial", "Mixed industrial and commercial use"),
+    "I-SO": ("Industrial, Shoreline Overlay", "Industrial use with added shoreline/environmental limits"),
+    "M1": ("Industrial Park", "Planned industrial park: warehousing, light manufacturing, distribution"),
+    "M-1": ("Industrial Park", "Planned industrial park: warehousing, light manufacturing, distribution"),
+    "M2": ("Industrial — limited/general", "General industrial and warehousing (specifics vary by city)"),
+    "M3": ("Industrial — general/heavy", "Heavy industrial, manufacturing, processing"),
+    "IL": ("Industrial — light", "Lowest-impact industrial: warehousing, light manufacturing"),
+    "IM": ("Industrial — medium", "Mid-intensity general industrial use"),
+    "IH": ("Industrial — heavy", "Higher-impact industrial: manufacturing, processing, outdoor storage"),
+    "HI": ("Heavy Industrial", "Manufacturing and industrial processing"),
+    "LI": ("Light Industrial", "Warehousing, distribution, light manufacturing"),
+}
+
+
+def zoning_short(code):
+    entry = ZONING_LABELS.get(code)
+    return f"{code} — {entry[0]}" if entry else f"{code} (industrial)"
+
+
+def zoning_full(code):
+    entry = ZONING_LABELS.get(code)
+    if entry:
+        short, plain = entry
+        return f"{code} — {short} ({plain})"
+    return f"{code} — industrial zoning code not in this project's lookup"
+
 
 @st.cache_data
 def load_data():
@@ -151,17 +189,18 @@ def render_dashboard_tab(gdf):
             fill_color=score_color(row["composite_score"]),
             fill_opacity=0.85,
             popup=folium.Popup(
-                f"<b>{row['site_label']}</b><br>"
+                f"<b style='font-size:14px'>{row['site_label']}</b><br>"
                 f"{row['address_full']}<br>"
                 f"{vacant_line}"
-                f"<b>Use on file:</b> {row['use_description']}<br>"
+                f"<div style='background:#f0f0f0;border-radius:4px;padding:4px 6px;margin:4px 0;'>"
+                f"<b>Current use:</b> {row['use_description']}</div>"
                 f"<b>Composite score:</b> {row['composite_score']:.2f}<br>"
                 f"<b>Lot size:</b> {int(row['SQFTLOT']):,} sqft<br>"
-                f"<b>Zoning:</b> {row['CURRENTZONING']}<br>"
+                f"<b>Zoning:</b> {zoning_full(row['CURRENTZONING'])}<br>"
                 f"<b>Highway dist:</b> {row['dist_highway_ft']:.0f} ft<br>"
                 f"<b>Rail dist:</b> {row['dist_rail_ft']:.0f} ft<br>"
                 f"<span style='color:#888'>PIN: {row['PIN']}</span>",
-                max_width=280,
+                max_width=300,
             ),
         ).add_to(m)
     render_legend(m)
@@ -173,8 +212,10 @@ def render_dashboard_tab(gdf):
     # Only the seven fields an analyst scans to rank sites at a glance. Highway/rail
     # distance stay in the map popup (per-site detail) rather than the grid, so
     # every column here fits on screen without horizontal scrolling.
+    visible = visible.copy()
+    visible["zoning_label"] = visible["CURRENTZONING"].apply(zoning_short)
     table = visible[
-        ["site_label", "address_full", "use_description", "is_vacant", "composite_score", "SQFTLOT", "CURRENTZONING"]
+        ["site_label", "address_full", "use_description", "is_vacant", "composite_score", "SQFTLOT", "zoning_label"]
     ].rename(
         columns={
             "site_label": "Site",
@@ -183,7 +224,7 @@ def render_dashboard_tab(gdf):
             "is_vacant": "Vacant",
             "composite_score": "Score",
             "SQFTLOT": "Lot sqft",
-            "CURRENTZONING": "Zoning",
+            "zoning_label": "Zoning",
         }
     )
 
@@ -202,7 +243,9 @@ def render_dashboard_tab(gdf):
             # uncontrolled color channel that clashes with the map's blue scale.
             "Score": st.column_config.NumberColumn(format="%.2f"),
             "Lot sqft": st.column_config.NumberColumn(format="%d"),
-            "Zoning": st.column_config.TextColumn(width="small"),
+            "Zoning": st.column_config.TextColumn(
+                width="medium", help="Technical code — plain-language category. Full glossary in the Methodology tab."
+            ),
         },
     )
     st.caption(
@@ -214,7 +257,7 @@ def render_dashboard_tab(gdf):
     )
 
 
-def render_methodology_tab():
+def render_methodology_tab(gdf):
     st.header("Methodology & why this exists")
 
     st.markdown(
@@ -307,15 +350,32 @@ sites only.
 """
     )
 
+    st.subheader("Zoning code glossary")
+    st.markdown(
+        "Every zoning code that appears in this candidate set, in its technical form "
+        "plus a plain-language reading. Codes are sorted by how many candidate sites "
+        "carry them."
+    )
+    zoning_counts = gdf["CURRENTZONING"].value_counts()
+    glossary_rows = []
+    for code, count in zoning_counts.items():
+        short, plain = ZONING_LABELS.get(code, ("Industrial (uncategorized)", "Not in this project's lookup"))
+        glossary_rows.append(
+            {"Code": code, "Short label": short, "Plain language": plain, "Candidate sites": int(count)}
+        )
+    st.dataframe(pd.DataFrame(glossary_rows), hide_index=True, use_container_width=True)
+
     st.subheader("Honesty notes — read before trusting a number here")
     st.warning(
         "**Zoning classification is a best-effort mapping, not an authoritative one.** "
         "King County's parcel data spans roughly 40 municipal zoning systems and ~900 "
         "distinct codes, with no public decode table for which ones mean 'industrial' "
-        "across jurisdictions. This project uses an explicit, documented list of "
-        "high-confidence codes (I1/I2/I3, M1/M2/M3, IL/IM/IH, etc.) built from standard "
-        "Washington municipal zoning conventions. A real engagement would verify every "
-        "code against each city's own ordinance before using it as a filter."
+        "across jurisdictions. The glossary above gives a *generic* plain-language "
+        "reading per code family (light/medium/heavy, park, etc.) — not a verbatim quote "
+        "from any one city's ordinance, and the same letter can mean different things in "
+        "different cities (Kent's M1 and Auburn's M1 are not the same rule). A real "
+        "engagement would verify every code against each city's own ordinance before "
+        "using it as a filter."
     )
     st.warning(
         "**Highway/rail distances are straight-line, not drive-time.** A production "
@@ -352,7 +412,7 @@ def main():
     with tab_dashboard:
         render_dashboard_tab(gdf)
     with tab_methodology:
-        render_methodology_tab()
+        render_methodology_tab(gdf)
 
 
 if __name__ == "__main__":
